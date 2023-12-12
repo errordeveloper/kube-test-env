@@ -1,7 +1,10 @@
 package kind
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,18 +24,74 @@ import (
 const (
 	Name              = "kind"
 	ClusterNamePrefix = "kte-"
+
+	EnvForceIsolated    = "KTE_FORCE_ISOLATED"
+	EnvForceIsolatedAll = "all"
+
+	EnvForcePreexisting       = "KTE_FORCE_PREEXISTING"
+	EnvForcePreexistingAll    = "all"
+	EnvForcePreexistingShared = "shared"
+
+	EnvPreexitstingKubeconfig = "KTE_PREEXISTING_KUBECONFIG"
 )
 
 type Kind struct {
 	UUID uuid.UUID
 	*cluster.Provider
 
+	prexistingKubeconfig *string
+
 	NodeImage   string
 	ArtifactDir string
 	Logger      klog.Logger
 }
 
+var shared = struct {
+	once *sync.Once
+	k    *Kind
+}{
+	once: &sync.Once{},
+}
+
+func Shared(logger klog.Logger) (*Kind, error) {
+	var initErr error
+	shared.once.Do(func() {
+		if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
+			shared.k = preexsting
+			return
+		}
+		artifactDir, err := os.MkdirTemp("", "kte-kind-shared-provider-")
+		if err != nil {
+			initErr = err
+			return
+		}
+		shared.k = New(artifactDir, logger.WithName("kind-shared-provider"))
+	})
+	if initErr != nil {
+		return nil, initErr
+	}
+
+	if v, ok := os.LookupEnv(EnvForceIsolated); ok && v != EnvForceIsolatedAll {
+		logger.Info("using isolated provider as '" + EnvForceIsolated + "=" + EnvForceIsolatedAll + "' was set")
+		artifactDir, err := os.MkdirTemp("", "kte-kind-shared-provider-")
+		if err != nil {
+			return nil, err
+		}
+		return New(artifactDir, logger), nil
+	}
+
+	logger.Info("using shared provider", "kind-provider-uuid", shared.k.UUID.String())
+
+	if shared.k == nil {
+		return nil, fmt.Errorf("shared provider '%s' not initialized", Name)
+	}
+	return shared.k, nil
+}
+
 func New(artifactDir string, logger klog.Logger) *Kind {
+	if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
+		return preexsting
+	}
 
 	logAdapter := &log.Adapter{logger.WithName("kind")}
 	uuid := uuid.New()
@@ -44,11 +103,59 @@ func New(artifactDir string, logger klog.Logger) *Kind {
 	}
 }
 
+func newPreexisting(logger klog.Logger, preexistingKubeconfig string) *Kind {
+	return &Kind{
+		UUID:                 uuid.New(),
+		prexistingKubeconfig: &preexistingKubeconfig,
+		Logger:               logger,
+	}
+}
+
+func newPreexistingFromEnv(logger klog.Logger, shared bool) *Kind {
+	forcePrexisting, haveForcePrexisting := os.LookupEnv(EnvForcePreexisting)
+	preexistingKubeconfig, havePreexistingKubeconfig := os.LookupEnv(EnvPreexitstingKubeconfig)
+
+	switch {
+	case !haveForcePrexisting && !havePreexistingKubeconfig:
+		return nil
+
+	case haveForcePrexisting && !havePreexistingKubeconfig:
+		logger.Info("cannot use pre-exising cluster" +
+			" as only'" + EnvForcePreexisting + "=" + forcePrexisting + "' was set" +
+			" but '" + EnvPreexitstingKubeconfig + "' wasn't")
+		return nil
+
+	case !haveForcePrexisting && havePreexistingKubeconfig:
+		logger.Info("cannot use pre-exising cluster" +
+			" as only'" + EnvPreexitstingKubeconfig + "=" + preexistingKubeconfig + "' was set" +
+			" but '" + EnvForcePreexisting + "' wasn't")
+		return nil
+
+	default:
+		switch forcePrexisting {
+		case EnvForcePreexistingAll:
+			return newPreexisting(logger.WithName("kind-prexisting-all"), preexistingKubeconfig)
+		case EnvForcePreexistingShared:
+			if shared {
+				logger.Info("not using pre-exising shared cluster as '" + EnvForcePreexisting + "=" + EnvForcePreexistingShared + "' was set, it needs to be explicitly set to '" + EnvForcePreexistingAll + "'")
+				return nil
+			}
+			return newPreexisting(logger.WithName("kind-prexisting-shared"), preexistingKubeconfig)
+		default:
+			logger.Info("not using pre-exising cluster as '" + EnvForcePreexisting + "=" + forcePrexisting + "' was set and it's unsupported")
+			return nil
+		}
+	}
+}
+
 func (k *Kind) ClusterName() string {
 	return ClusterNamePrefix + k.UUID.String()
 }
 
 func (k *Kind) KubeConfigPath() string {
+	if k.prexistingKubeconfig != nil {
+		return *k.prexistingKubeconfig
+	}
 	return filepath.Join(k.ArtifactDir, k.ClusterName(), "kubeconfig")
 }
 
@@ -57,6 +164,9 @@ func (k *Kind) LogsDir() string {
 }
 
 func (k *Kind) Create(config *configv1alpha4.Cluster, timeout time.Duration) error {
+	if k.shouldBypass() {
+		return nil
+	}
 	options := []cluster.CreateOption{
 		cluster.CreateWithKubeconfigPath(k.KubeConfigPath()),
 		cluster.CreateWithDisplayUsage(false),
@@ -73,6 +183,9 @@ func (k *Kind) Create(config *configv1alpha4.Cluster, timeout time.Duration) err
 }
 
 func (k *Kind) CollectLogs() error {
+	if k.shouldBypass() {
+		return nil
+	}
 	return k.Provider.CollectLogs(k.ClusterName(), k.LogsDir())
 }
 
@@ -95,6 +208,9 @@ func (k *Kind) NewClientConfig() (*rest.Config, error) {
 			ExplicitPath: k.KubeConfigPath(),
 		},
 		&clientcmd.ConfigOverrides{
+			// ClusterInfo: clientcmdapi.Cluster{
+			// 	Server: "",
+			// },
 			CurrentContext: Name + "-" + k.ClusterName(),
 		})
 
@@ -102,5 +218,16 @@ func (k *Kind) NewClientConfig() (*rest.Config, error) {
 }
 
 func (k *Kind) Delete() error {
+	if k.shouldBypass() {
+		return nil
+	}
 	return k.Provider.Delete(k.ClusterName(), k.KubeConfigPath())
+}
+
+func (k *Kind) shouldBypass() bool {
+	if k.prexistingKubeconfig != nil {
+		k.Logger.V(2).Info("bypassing kind provider as pre-existing cluster credentials were specified via '" + EnvForcePreexisting + "' and '" + EnvPreexitstingKubeconfig + "'")
+		return true
+	}
+	return false
 }
