@@ -41,7 +41,9 @@ type Kind struct {
 
 	prexistingKubeconfig *string
 
-	NodeImage   string
+	NodeImage string
+	Retain    bool
+
 	ArtifactDir string
 	Logger      klog.Logger
 }
@@ -178,6 +180,9 @@ func (k *Kind) Create(config *configv1alpha4.Cluster, timeout time.Duration) err
 	}
 	if k.NodeImage != "" {
 		options = append(options, cluster.CreateWithNodeImage(k.NodeImage))
+	}
+	if k.Retain {
+		options = append(options, cluster.CreateWithRetain(true))
 	}
 	return k.Provider.Create(k.ClusterName(), options...)
 }
