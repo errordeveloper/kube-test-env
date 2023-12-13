@@ -9,10 +9,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgo "k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	klog "k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"sigs.k8s.io/kind/pkg/cluster"
 
@@ -53,6 +58,12 @@ var shared = struct {
 	k    *Kind
 }{
 	once: &sync.Once{},
+}
+
+var Log = klog.NewKlogr()
+
+func init() {
+	ctrl.SetLogger(Log.WithName("kte-controller-runtime"))
 }
 
 func Shared(logger klog.Logger) (*Kind, error) {
@@ -194,17 +205,35 @@ func (k *Kind) CollectLogs() error {
 	return k.Provider.CollectLogs(k.ClusterName(), k.LogsDir())
 }
 
-func (k *Kind) NewControllerManager() (ctrl.Manager, error) {
+func (k *Kind) NewControllerRuntimeClient() (ctrlClient.Client, error) {
+	options := ctrlClient.Options{
+		Scheme: runtime.NewScheme(),
+	}
+
+	if err := clientgoscheme.AddToScheme(options.Scheme); err != nil {
+		return nil, err
+	}
+
 	clientConfig, err := k.NewClientConfig()
 	if err != nil {
 		return nil, err
 	}
-	logger := k.Logger.WithValues("kind-provider-uuid", k.UUID.String())
-	ctrl.SetLogger(logger.WithName("kte-controller-runtime"))
-	options := ctrl.Options{
-		Logger: logger.WithName("kte-controller-manager"),
+
+	return ctrlClient.New(clientConfig, options)
+}
+
+func (k *Kind) NewClientSet() (clientgo.Interface, error) {
+	clientConfig, err := k.NewClientConfig()
+	if err != nil {
+		return nil, err
 	}
-	return ctrl.NewManager(clientConfig, options)
+	clientConfig.WarningHandler = ctrlLog.NewKubeAPIWarningLogger(
+		Log.WithName("KubeAPIWarningLogger"),
+		ctrlLog.KubeAPIWarningLoggerOptions{
+			Deduplicate: true,
+		},
+	)
+	return clientgo.NewForConfig(clientConfig)
 }
 
 func (k *Kind) NewClientConfig() (*rest.Config, error) {

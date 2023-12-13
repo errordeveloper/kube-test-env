@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	klog "k8s.io/klog/v2"
 
 	"github.com/errordeveloper/kube-test-env/provider/kind"
@@ -17,7 +18,9 @@ import (
 func TestKindCreateAccessDelete(t *testing.T) {
 	g := NewWithT(t)
 
-	log := klog.FromContext(context.Background())
+	ctx := context.Background()
+
+	log := klog.FromContext(ctx)
 	k := kind.New(t.TempDir(), log)
 
 	g.Expect(k.Create(nil, time.Minute*10)).To(Succeed())
@@ -73,21 +76,26 @@ func TestKindCreateAccessDelete(t *testing.T) {
 	g.Expect(clientConfig.TLSClientConfig.KeyData).ToNot(BeEmpty())
 	g.Expect(clientConfig.TLSClientConfig.CAData).ToNot(BeEmpty())
 
-	mgr, err := k.NewControllerManager()
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(mgr).NotTo(BeNil())
+	{
+		clientSet, err := k.NewClientSet()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(clientSet).NotTo(BeNil())
 
-	nodes := &corev1.NodeList{}
-	ctx := context.Background()
-	go func() {
-		err := mgr.Start(ctx)
-		if err != nil {
-			panic(err)
-		}
-	}()
+		nodes, err := clientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(nodes.Items).To(HaveLen(1))
+	}
 
-	g.Expect(mgr.GetClient().List(ctx, nodes)).To(Succeed())
-	g.Expect(nodes.Items).To(HaveLen(1))
+	{
+		client, err := k.NewControllerRuntimeClient()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(client).NotTo(BeNil())
+
+		nodes := &corev1.NodeList{}
+
+		g.Expect(client.List(ctx, nodes)).To(Succeed())
+		g.Expect(nodes.Items).To(HaveLen(1))
+	}
 
 	g.Expect(k.Delete()).To(Succeed())
 
