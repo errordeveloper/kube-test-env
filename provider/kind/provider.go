@@ -53,6 +53,17 @@ type Kind struct {
 	Logger      klog.Logger
 }
 
+type (
+	Cluster    = configv1alpha4.Cluster
+	Node       = configv1alpha4.Node
+	Networking = configv1alpha4.Networking
+)
+
+const (
+	ControlPlaneRole = configv1alpha4.ControlPlaneRole
+	WorkerRole       = configv1alpha4.WorkerRole
+)
+
 var shared = struct {
 	once *sync.Once
 	k    *Kind
@@ -176,7 +187,7 @@ func (k *Kind) LogsDir() string {
 	return filepath.Join(k.ArtifactDir, k.ClusterName(), "logs")
 }
 
-func (k *Kind) Create(config *configv1alpha4.Cluster, timeout time.Duration) error {
+func (k *Kind) Create(config *Cluster, timeout time.Duration) error {
 	if k.shouldBypass() {
 		return nil
 	}
