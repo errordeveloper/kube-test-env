@@ -102,8 +102,12 @@ func TestKindCreateAccessDelete(t *testing.T) {
 		g.Expect(clientConfig.TLSClientConfig.KeyData).ToNot(BeEmpty())
 		g.Expect(clientConfig.TLSClientConfig.CAData).ToNot(BeEmpty())
 
+		clients, err := k.NewClientMaker()
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(clients).NotTo(BeNil())
+
 		{
-			clientSet, err := k.NewClientSet()
+			clientSet, err := clients.NewClientSet()
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(clientSet).NotTo(BeNil())
 
@@ -113,7 +117,7 @@ func TestKindCreateAccessDelete(t *testing.T) {
 		}
 
 		{
-			client, err := k.NewControllerRuntimeClient()
+			client, err := clients.NewControllerRuntimeClient()
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(client).NotTo(BeNil())
 

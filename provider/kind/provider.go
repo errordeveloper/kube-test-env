@@ -9,20 +9,16 @@ import (
 
 	"github.com/google/uuid"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	clientgo "k8s.io/client-go/kubernetes"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	klog "k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
-	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"sigs.k8s.io/kind/pkg/cluster"
 
 	configv1alpha4 "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 
+	"github.com/errordeveloper/kube-test-env/clients"
 	"github.com/errordeveloper/kube-test-env/provider/kind/log"
 )
 
@@ -216,37 +212,6 @@ func (k *Kind) CollectLogs() error {
 	return k.Provider.CollectLogs(k.ClusterName(), k.LogsDir())
 }
 
-func (k *Kind) NewControllerRuntimeClient() (ctrlClient.Client, error) {
-	options := ctrlClient.Options{
-		Scheme: runtime.NewScheme(),
-	}
-
-	if err := clientgoscheme.AddToScheme(options.Scheme); err != nil {
-		return nil, err
-	}
-
-	clientConfig, err := k.NewClientConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	return ctrlClient.New(clientConfig, options)
-}
-
-func (k *Kind) NewClientSet() (clientgo.Interface, error) {
-	clientConfig, err := k.NewClientConfig()
-	if err != nil {
-		return nil, err
-	}
-	clientConfig.WarningHandler = ctrlLog.NewKubeAPIWarningLogger(
-		Log.WithName("KubeAPIWarningLogger"),
-		ctrlLog.KubeAPIWarningLoggerOptions{
-			Deduplicate: true,
-		},
-	)
-	return clientgo.NewForConfig(clientConfig)
-}
-
 func (k *Kind) NewClientConfig() (*rest.Config, error) {
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{
@@ -260,6 +225,14 @@ func (k *Kind) NewClientConfig() (*rest.Config, error) {
 		})
 
 	return loader.ClientConfig()
+}
+
+func (k *Kind) NewClientMaker() (*clients.ClientMaker, error) {
+	clientConfig, err := k.NewClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return clients.NewClientMaker(clientConfig, Log), nil
 }
 
 func (k *Kind) Delete() error {
