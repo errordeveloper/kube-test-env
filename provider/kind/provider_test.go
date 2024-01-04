@@ -127,6 +127,36 @@ func TestKindCreateAccessDelete(t *testing.T) {
 			g.Expect(nodes.Items).To(HaveLen(tc.numNodes))
 		}
 
+		{
+			clients, err := clients.NewNamespacedClientMaker(ctx, nil)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(clients).NotTo(BeNil())
+
+			client, err := clients.NewClientSet()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(client).NotTo(BeNil())
+
+			serviceAccounts, err := client.CoreV1().ServiceAccounts(clients.Namespace).List(ctx, metav1.ListOptions{})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(serviceAccounts.Items).To(HaveLen(2))
+		}
+
+		{
+			clients, err := clients.NewNamespacedClientMaker(ctx, nil)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(clients).NotTo(BeNil())
+
+			client, err := clients.NewControllerRuntimeClient()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(client).NotTo(BeNil())
+
+			serviceAccounts := &corev1.ServiceAccountList{}
+			g.Expect(client.List(ctx, serviceAccounts, clients.DefaultControllerRuntimeListOptions)).To(Succeed())
+			g.Expect(serviceAccounts.Items).To(HaveLen(2))
+		}
+
+		g.Expect(clients.Cleanup()).To(Succeed())
+
 		g.Expect(k.Delete()).To(Succeed())
 
 		clusters, err = k.Provider.List()
