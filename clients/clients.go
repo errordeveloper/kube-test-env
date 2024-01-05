@@ -27,7 +27,7 @@ type ClientMaker struct {
 
 	ResourceMetadataTemplate v1.ObjectMeta
 
-	namespacedClientResources [][]ctrlClient.Object
+	cleanupCallbacks []func(context.Context)
 }
 
 type NamespacedClientMaker struct {
@@ -36,6 +36,8 @@ type NamespacedClientMaker struct {
 	Namespace                           string
 	DefaultControllerRuntimeListOptions *ctrlClient.ListOptions
 	ResourceMetadataTemplate            v1.ObjectMeta
+
+	Cleanup func(context.Context)
 }
 
 func NewClientMaker(config *rest.Config, logger klog.Logger) *ClientMaker {
@@ -129,13 +131,6 @@ func (m *ClientMaker) NewNamespacedClientMaker(ctx context.Context, meta *v1.Obj
 		return nil, err
 	}
 
-	// revers of the creation order
-	m.namespacedClientResources = append(m.namespacedClientResources, []ctrlClient.Object{
-		roleBinding,
-		serviceAccount,
-		namespace,
-	})
-
 	clientConfig := rest.CopyConfig(m.Config)
 	clientConfig.Impersonate.UserName = fmt.Sprintf("system:serviceaccount:%s:%s",
 		meta.Namespace, serviceAccount.Name)
@@ -154,22 +149,26 @@ func (m *ClientMaker) NewNamespacedClientMaker(ctx context.Context, meta *v1.Obj
 			Namespace:    meta.Namespace,
 		},
 	}
+
+	clientMaker.Cleanup = func(ctx context.Context) {
+		options := v1.DeleteOptions{}
+		if err := clientSet.RbacV1().RoleBindings(meta.Namespace).Delete(ctx, roleBinding.Name, options); ctrlClient.IgnoreNotFound(err) != nil {
+			m.logger.Error(err, "failed to delete role binding")
+		}
+		if err := clientSet.CoreV1().ServiceAccounts(meta.Namespace).Delete(ctx, serviceAccount.Name, options); ctrlClient.IgnoreNotFound(err) != nil {
+			m.logger.Error(err, "failed to delete service account")
+		}
+		if err := clientSet.CoreV1().Namespaces().Delete(ctx, namespace.Name, options); ctrlClient.IgnoreNotFound(err) != nil {
+			m.logger.Error(err, "failed to delete namespace")
+		}
+	}
+	m.cleanupCallbacks = append(m.cleanupCallbacks, clientMaker.Cleanup)
+
 	return clientMaker, nil
 }
 
-func (m *ClientMaker) Cleanup() error {
-	client, err := m.NewControllerRuntimeClient()
-	if err != nil {
-		return err
+func (m *ClientMaker) Cleanup(ctx context.Context) {
+	for i := range m.cleanupCallbacks {
+		m.cleanupCallbacks[i](ctx)
 	}
-
-	for i := len(m.namespacedClientResources) - 1; i >= 0; i-- {
-		for _, resource := range m.namespacedClientResources[i] {
-			if err := client.Delete(context.Background(), resource, &ctrlClient.DeleteAllOfOptions{}); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }

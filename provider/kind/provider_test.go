@@ -51,7 +51,11 @@ func TestKindCreateAccessDelete(t *testing.T) {
 
 		g.Expect(k.Create(tc.config, time.Minute*10)).To(Succeed())
 
-		clusters, err := k.Provider.List()
+		g.Expect(k).To(BeAssignableToTypeOf((*kind.Managed)(nil)))
+
+		provider := k.(*kind.Managed).Provider
+
+		clusters, err := provider.List()
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(clusters).To(ContainElement(k.ClusterName()))
 
@@ -139,6 +143,8 @@ func TestKindCreateAccessDelete(t *testing.T) {
 			serviceAccounts, err := client.CoreV1().ServiceAccounts(clients.Namespace).List(ctx, metav1.ListOptions{})
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(serviceAccounts.Items).To(HaveLen(2))
+
+			clients.Cleanup(ctx)
 		}
 
 		{
@@ -155,11 +161,11 @@ func TestKindCreateAccessDelete(t *testing.T) {
 			g.Expect(serviceAccounts.Items).To(HaveLen(2))
 		}
 
-		g.Expect(clients.Cleanup()).To(Succeed())
+		clients.Cleanup(ctx)
 
 		g.Expect(k.Delete()).To(Succeed())
 
-		clusters, err = k.Provider.List()
+		clusters, err = provider.List()
 		g.Expect(err).NotTo(HaveOccurred())
 
 		g.Expect(clusters).ToNot(ContainElement(k.ClusterName()))

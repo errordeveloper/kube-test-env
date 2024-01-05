@@ -1,6 +1,8 @@
 package kind
 
 import (
+	"crypto"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,11 +38,28 @@ const (
 	EnvPreexitstingKubeconfig = "KTE_PREEXISTING_KUBECONFIG"
 )
 
-type Kind struct {
-	UUID uuid.UUID
-	*cluster.Provider
+type KindProvider interface {
+	ClusterName() string
+	KubeConfigPath() string
+	NewClientConfig() (*rest.Config, error)
+	NewClientMaker() (*clients.ClientMaker, error)
+}
 
-	prexistingKubeconfig *string
+type KindLifecycle interface {
+	KindProvider
+
+	Create(config *Cluster, timeout time.Duration) error
+	CollectLogs() error
+	LogsDir() string
+	Delete() error
+}
+
+type Managed struct {
+	Common[KindProvider]
+
+	UUID uuid.UUID
+
+	*cluster.Provider
 
 	NodeImage string
 	Retain    bool
@@ -48,6 +67,14 @@ type Kind struct {
 	ArtifactDir string
 	Logger      klog.Logger
 }
+
+type Unmanaged struct {
+	Common[KindProvider]
+
+	importedKubeconfigPath string
+}
+
+type Common[T KindProvider] struct{ k T }
 
 type (
 	Cluster    = configv1alpha4.Cluster
@@ -62,10 +89,15 @@ const (
 
 var shared = struct {
 	once *sync.Once
-	k    *Kind
+	k    KindLifecycle
 }{
 	once: &sync.Once{},
 }
+
+var (
+	SharedConfig  *Cluster
+	SharedTimeout = time.Minute * 10
+)
 
 var Log = klog.NewKlogr()
 
@@ -73,7 +105,7 @@ func init() {
 	ctrl.SetLogger(Log.WithName("kte-controller-runtime"))
 }
 
-func Shared(logger klog.Logger) (*Kind, error) {
+func Shared(logger klog.Logger) (KindProvider, error) {
 	var initErr error
 	shared.once.Do(func() {
 		if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
@@ -86,6 +118,11 @@ func Shared(logger klog.Logger) (*Kind, error) {
 			return
 		}
 		shared.k = New(artifactDir, logger.WithName("kind-shared-provider"))
+
+		if err := shared.k.Create(SharedConfig, SharedTimeout); err != nil {
+			initErr = err
+			return
+		}
 	})
 	if initErr != nil {
 		return nil, initErr
@@ -97,10 +134,14 @@ func Shared(logger klog.Logger) (*Kind, error) {
 		if err != nil {
 			return nil, err
 		}
-		return New(artifactDir, logger), nil
+		k := New(artifactDir, logger)
+		if err := k.Create(SharedConfig, SharedTimeout); err != nil {
+			return nil, err
+		}
+		return k, nil
 	}
 
-	logger.Info("using shared provider", "kind-provider-uuid", shared.k.UUID.String())
+	logger.Info("using shared provider", "kind-cluster-name", shared.k.ClusterName())
 
 	if shared.k == nil {
 		return nil, fmt.Errorf("shared provider '%s' not initialized", Name)
@@ -108,30 +149,57 @@ func Shared(logger klog.Logger) (*Kind, error) {
 	return shared.k, nil
 }
 
-func New(artifactDir string, logger klog.Logger) *Kind {
-	if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
-		return preexsting
+func SharedCollectLogs() error {
+	if shared.k == nil {
+		return nil
+	}
+	return shared.k.CollectLogs()
+}
+
+func SharedLogsDir() string {
+	if shared.k == nil {
+		return ""
+	}
+	return shared.k.LogsDir()
+}
+
+func SharedDelete() error {
+	if shared.k == nil {
+		return nil
+	}
+	if err := shared.k.Delete(); err != nil {
+		return err
+	}
+	shared.k = nil
+	return nil
+}
+
+func New(artifactDir string, logger klog.Logger) KindLifecycle {
+	if preexisting := newPreexistingFromEnv(logger, false); preexisting != nil {
+		return preexisting
 	}
 
 	logAdapter := &log.Adapter{logger.WithName("kind")}
 	uuid := uuid.New()
-	return &Kind{
+	k := &Managed{
 		UUID:        uuid,
 		ArtifactDir: artifactDir,
 		Logger:      logger.WithName("kind-provider").WithValues("kind-provider-uuid", uuid.String()),
 		Provider:    cluster.NewProvider(cluster.ProviderWithLogger(logAdapter)),
 	}
+	k.Common = Common[KindProvider]{k: k}
+	return k
 }
 
-func newPreexisting(logger klog.Logger, preexistingKubeconfig string) *Kind {
-	return &Kind{
-		UUID:                 uuid.New(),
-		prexistingKubeconfig: &preexistingKubeconfig,
-		Logger:               logger,
+func newPreexisting(logger klog.Logger, importKubeconfigPath string) *Unmanaged {
+	k := &Unmanaged{
+		importedKubeconfigPath: importKubeconfigPath,
 	}
+	k.Common = Common[KindProvider]{k: k}
+	return k
 }
 
-func newPreexistingFromEnv(logger klog.Logger, shared bool) *Kind {
+func newPreexistingFromEnv(logger klog.Logger, shared bool) *Unmanaged {
 	forcePrexisting, haveForcePrexisting := os.LookupEnv(EnvForcePreexisting)
 	preexistingKubeconfig, havePreexistingKubeconfig := os.LookupEnv(EnvPreexitstingKubeconfig)
 
@@ -168,25 +236,19 @@ func newPreexistingFromEnv(logger klog.Logger, shared bool) *Kind {
 	}
 }
 
-func (k *Kind) ClusterName() string {
+func (k *Managed) ClusterName() string {
 	return ClusterNamePrefix + k.UUID.String()
 }
 
-func (k *Kind) KubeConfigPath() string {
-	if k.prexistingKubeconfig != nil {
-		return *k.prexistingKubeconfig
-	}
+func (k *Managed) KubeConfigPath() string {
 	return filepath.Join(k.ArtifactDir, k.ClusterName(), "kubeconfig")
 }
 
-func (k *Kind) LogsDir() string {
+func (k *Managed) LogsDir() string {
 	return filepath.Join(k.ArtifactDir, k.ClusterName(), "logs")
 }
 
-func (k *Kind) Create(config *Cluster, timeout time.Duration) error {
-	if k.shouldBypass() {
-		return nil
-	}
+func (k *Managed) Create(config *Cluster, timeout time.Duration) error {
 	options := []cluster.CreateOption{
 		cluster.CreateWithKubeconfigPath(k.KubeConfigPath()),
 		cluster.CreateWithDisplayUsage(false),
@@ -205,47 +267,45 @@ func (k *Kind) Create(config *Cluster, timeout time.Duration) error {
 	return k.Provider.Create(k.ClusterName(), options...)
 }
 
-func (k *Kind) CollectLogs() error {
-	if k.shouldBypass() {
-		return nil
-	}
+func (k *Managed) CollectLogs() error {
 	return k.Provider.CollectLogs(k.ClusterName(), k.LogsDir())
 }
 
-func (k *Kind) NewClientConfig() (*rest.Config, error) {
+func (k *Managed) Delete() error {
+	return k.Provider.Delete(k.ClusterName(), k.KubeConfigPath())
+}
+
+func (k *Unmanaged) ClusterName() string {
+	hash := crypto.SHA256.New()
+	_, _ = hash.Write([]byte(k.importedKubeconfigPath))
+	return ClusterNamePrefix + hex.EncodeToString(hash.Sum(nil))
+}
+
+func (k *Unmanaged) KubeConfigPath() string                              { return k.importedKubeconfigPath }
+func (k *Unmanaged) LogsDir() string                                     { return "" }
+func (k *Unmanaged) Create(config *Cluster, timeout time.Duration) error { return nil }
+func (k *Unmanaged) CollectLogs() error                                  { return nil }
+func (k *Unmanaged) Delete() error                                       { return nil }
+
+func (k Common[T]) NewClientConfig() (*rest.Config, error) {
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{
-			ExplicitPath: k.KubeConfigPath(),
+			ExplicitPath: k.k.KubeConfigPath(),
 		},
 		&clientcmd.ConfigOverrides{
 			// ClusterInfo: clientcmdapi.Cluster{
 			// 	Server: "",
 			// },
-			CurrentContext: Name + "-" + k.ClusterName(),
+			CurrentContext: Name + "-" + k.k.ClusterName(),
 		})
 
 	return loader.ClientConfig()
 }
 
-func (k *Kind) NewClientMaker() (*clients.ClientMaker, error) {
+func (k Common[T]) NewClientMaker() (*clients.ClientMaker, error) {
 	clientConfig, err := k.NewClientConfig()
 	if err != nil {
 		return nil, err
 	}
 	return clients.NewClientMaker(clientConfig, Log), nil
-}
-
-func (k *Kind) Delete() error {
-	if k.shouldBypass() {
-		return nil
-	}
-	return k.Provider.Delete(k.ClusterName(), k.KubeConfigPath())
-}
-
-func (k *Kind) shouldBypass() bool {
-	if k.prexistingKubeconfig != nil {
-		k.Logger.V(2).Info("bypassing kind provider as pre-existing cluster credentials were specified via '" + EnvForcePreexisting + "' and '" + EnvPreexitstingKubeconfig + "'")
-		return true
-	}
-	return false
 }
