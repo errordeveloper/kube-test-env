@@ -173,3 +173,44 @@ func TestKindCreateAccessDelete(t *testing.T) {
 		t.Logf("Deleted cluster name=%q", k.ClusterName())
 	}
 }
+
+func TestKindSharedAndImorted(t *testing.T) {
+	g := NewWithT(t)
+
+	ctx := context.Background()
+
+	log := klog.FromContext(ctx)
+
+	k, err := kind.Shared(log)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(k).To(BeAssignableToTypeOf((*kind.Managed)(nil)))
+
+	clients, err := k.NewClientMaker()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(clients).NotTo(BeNil())
+	client, err := clients.NewClientSet()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(client).NotTo(BeNil())
+
+	nodes1, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodes1.Items).To(HaveLen(1))
+
+	unmanaged := kind.NewUnmanaged(log, k.KubeConfigPath())
+
+	clients, err = unmanaged.NewClientMaker()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(clients).NotTo(BeNil())
+	client, err = clients.NewClientSet()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(client).NotTo(BeNil())
+
+	nodes2, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nodes2.Items).To(HaveLen(1))
+
+	g.Expect(nodes1).To(Equal(nodes2))
+
+	g.Expect(kind.SharedDelete()).To(Succeed())
+}

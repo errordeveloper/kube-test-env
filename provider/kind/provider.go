@@ -111,7 +111,7 @@ func Shared(logger klog.Logger) (KindProvider, error) {
 	var initErr error
 	shared.once.Do(func() {
 		logger.Info("initializing shared provider")
-		if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
+		if preexsting := newUnamanagedFromEnv(logger, false); preexsting != nil {
 			shared.k = preexsting
 			return
 		}
@@ -179,7 +179,7 @@ func SharedDelete() error {
 }
 
 func New(artifactDir string, logger klog.Logger) KindLifecycle {
-	if preexisting := newPreexistingFromEnv(logger, false); preexisting != nil {
+	if preexisting := newUnamanagedFromEnv(logger, false); preexisting != nil {
 		return preexisting
 	}
 
@@ -195,7 +195,7 @@ func New(artifactDir string, logger klog.Logger) KindLifecycle {
 	return k
 }
 
-func newPreexisting(logger klog.Logger, importKubeconfigPath string) *Unmanaged {
+func NewUnmanaged(logger klog.Logger, importKubeconfigPath string) *Unmanaged {
 	k := &Unmanaged{
 		Logger:                 logger,
 		importedKubeconfigPath: importKubeconfigPath,
@@ -204,7 +204,7 @@ func newPreexisting(logger klog.Logger, importKubeconfigPath string) *Unmanaged 
 	return k
 }
 
-func newPreexistingFromEnv(logger klog.Logger, shared bool) *Unmanaged {
+func newUnamanagedFromEnv(logger klog.Logger, shared bool) *Unmanaged {
 	forcePrexisting, haveForcePrexisting := os.LookupEnv(EnvForcePreexisting)
 	preexistingKubeconfig, havePreexistingKubeconfig := os.LookupEnv(EnvPreexitstingKubeconfig)
 
@@ -227,13 +227,13 @@ func newPreexistingFromEnv(logger klog.Logger, shared bool) *Unmanaged {
 	default:
 		switch forcePrexisting {
 		case EnvForcePreexistingAll:
-			return newPreexisting(logger.WithName("kind-prexisting-all"), preexistingKubeconfig)
+			return NewUnmanaged(logger.WithName("kind-prexisting-all"), preexistingKubeconfig)
 		case EnvForcePreexistingShared:
 			if shared {
 				logger.Info("not using pre-exising shared cluster as '" + EnvForcePreexisting + "=" + EnvForcePreexistingShared + "' was set, it needs to be explicitly set to '" + EnvForcePreexistingAll + "'")
 				return nil
 			}
-			return newPreexisting(logger.WithName("kind-prexisting-shared"), preexistingKubeconfig)
+			return NewUnmanaged(logger.WithName("kind-prexisting-shared"), preexistingKubeconfig)
 		default:
 			logger.Info("not using pre-exising cluster as '" + EnvForcePreexisting + "=" + forcePrexisting + "' was set and it's unsupported")
 			return nil
@@ -307,7 +307,7 @@ func (k Common[T]) NewClientConfig() (*rest.Config, error) {
 			ExplicitPath: k.k.KubeConfigPath(),
 		},
 		&clientcmd.ConfigOverrides{
-			CurrentContext: Name + "-" + k.k.ClusterName(),
+			// CurrentContext: Name + "-" + k.k.ClusterName(),
 		})
 
 	return loader.ClientConfig()
