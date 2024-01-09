@@ -71,6 +71,8 @@ type Managed struct {
 type Unmanaged struct {
 	Common[KindProvider]
 
+	Logger klog.Logger
+
 	importedKubeconfigPath string
 }
 
@@ -108,6 +110,7 @@ func init() {
 func Shared(logger klog.Logger) (KindProvider, error) {
 	var initErr error
 	shared.once.Do(func() {
+		logger.Info("initializing shared provider")
 		if preexsting := newPreexistingFromEnv(logger, false); preexsting != nil {
 			shared.k = preexsting
 			return
@@ -119,6 +122,7 @@ func Shared(logger klog.Logger) (KindProvider, error) {
 		}
 		shared.k = New(artifactDir, logger.WithName("kind-shared-provider"))
 
+		logger.Info("creating cluster with shared provider")
 		if err := shared.k.Create(SharedConfig, SharedTimeout); err != nil {
 			initErr = err
 			return
@@ -193,6 +197,7 @@ func New(artifactDir string, logger klog.Logger) KindLifecycle {
 
 func newPreexisting(logger klog.Logger, importKubeconfigPath string) *Unmanaged {
 	k := &Unmanaged{
+		Logger:                 logger,
 		importedKubeconfigPath: importKubeconfigPath,
 	}
 	k.Common = Common[KindProvider]{k: k}
@@ -264,14 +269,17 @@ func (k *Managed) Create(config *Cluster, timeout time.Duration) error {
 	if k.Retain {
 		options = append(options, cluster.CreateWithRetain(true))
 	}
+	k.Logger.Info("Create(): creating cluster", "kind-cluster-name", k.ClusterName())
 	return k.Provider.Create(k.ClusterName(), options...)
 }
 
 func (k *Managed) CollectLogs() error {
+	k.Logger.Info("CollectLogs(): collecting logs", "kind-cluster-name", k.ClusterName())
 	return k.Provider.CollectLogs(k.ClusterName(), k.LogsDir())
 }
 
 func (k *Managed) Delete() error {
+	k.Logger.Info("Delete(): deleting cluster", "kind-cluster-name", k.ClusterName())
 	return k.Provider.Delete(k.ClusterName(), k.KubeConfigPath())
 }
 
@@ -281,11 +289,17 @@ func (k *Unmanaged) ClusterName() string {
 	return ClusterNamePrefix + hex.EncodeToString(hash.Sum(nil))
 }
 
-func (k *Unmanaged) KubeConfigPath() string                              { return k.importedKubeconfigPath }
-func (k *Unmanaged) LogsDir() string                                     { return "" }
-func (k *Unmanaged) Create(config *Cluster, timeout time.Duration) error { return nil }
-func (k *Unmanaged) CollectLogs() error                                  { return nil }
-func (k *Unmanaged) Delete() error                                       { return nil }
+func (k *Unmanaged) KubeConfigPath() string { return k.importedKubeconfigPath }
+func (k *Unmanaged) LogsDir() string        { return "" }
+
+func (k *Unmanaged) noop(fn string) error {
+	k.Logger.Info(fmt.Sprintf("%s(): no-op, cluster was imported", fn), "kubeconfig", k.importedKubeconfigPath)
+	return nil
+}
+
+func (k *Unmanaged) Create(config *Cluster, timeout time.Duration) error { return k.noop("Create") }
+func (k *Unmanaged) CollectLogs() error                                  { return k.noop("CollectLogs") }
+func (k *Unmanaged) Delete() error                                       { return k.noop("Delete") }
 
 func (k Common[T]) NewClientConfig() (*rest.Config, error) {
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
@@ -293,9 +307,6 @@ func (k Common[T]) NewClientConfig() (*rest.Config, error) {
 			ExplicitPath: k.k.KubeConfigPath(),
 		},
 		&clientcmd.ConfigOverrides{
-			// ClusterInfo: clientcmdapi.Cluster{
-			// 	Server: "",
-			// },
 			CurrentContext: Name + "-" + k.k.ClusterName(),
 		})
 
