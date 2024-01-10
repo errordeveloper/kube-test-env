@@ -186,6 +186,8 @@ func TestKindSharedAndImorted(t *testing.T) {
 
 	g.Expect(k).To(BeAssignableToTypeOf((*kind.Managed)(nil)))
 
+	provider := k.(*kind.Managed).Provider
+
 	clients, err := k.NewClientMaker()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(clients).NotTo(BeNil())
@@ -213,4 +215,11 @@ func TestKindSharedAndImorted(t *testing.T) {
 	g.Expect(nodes1).To(Equal(nodes2))
 
 	g.Expect(kind.SharedDelete()).To(Succeed())
+
+	clusters, err := provider.List()
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(clusters).ToNot(ContainElement(k.ClusterName()))
+
+	t.Logf("Deleted cluster name=%q", k.ClusterName())
 }
