@@ -161,6 +161,17 @@ func TestKindCreateAccessDelete(t *testing.T) {
 			g.Expect(serviceAccounts.Items).To(HaveLen(2))
 		}
 
+		{
+			rm, err := clients.NewResourceManager()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(rm).NotTo(BeNil())
+
+			managed := k.(*kind.Managed)
+			g.Expect(managed.ApplyFluxSourceController(ctx, rm)).To(Succeed())
+			g.Expect(managed.ApplyFluxHelmController(ctx, rm)).To(Succeed())
+			g.Expect(managed.ApplyFluxKustomizeController(ctx, rm)).To(Succeed())
+		}
+
 		clients.Cleanup(ctx)
 
 		g.Expect(k.Delete()).To(Succeed())

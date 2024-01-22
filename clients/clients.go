@@ -13,6 +13,9 @@ import (
 	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/pkg/ssa"
+
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
@@ -76,6 +79,22 @@ func (m *ClientMakerBase) NewClientSet() (clientgo.Interface, error) {
 		},
 	)
 	return clientgo.NewForConfig(clientConfig)
+}
+
+func (m *ClientMakerBase) NewResourceManager() (*ssa.ResourceManager, error) {
+	client, err := m.NewControllerRuntimeClient()
+	if err != nil {
+		return nil, err
+	}
+
+	resourceManager := ssa.NewResourceManager(client,
+		polling.NewStatusPoller(client, client.RESTMapper(), polling.Options{}),
+		ssa.Owner{
+			Field: "kte",
+			Group: "addons.kte.dev",
+		},
+	)
+	return resourceManager, nil
 }
 
 func (m *ClientMaker) NewNamespacedClientMaker(ctx context.Context, meta *v1.ObjectMeta) (*NamespacedClientMaker, error) {

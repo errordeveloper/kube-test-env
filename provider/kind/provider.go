@@ -1,14 +1,17 @@
 package kind
 
 import (
+	"context"
 	"crypto"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/fluxcd/pkg/ssa"
 	"github.com/google/uuid"
 
 	"k8s.io/client-go/rest"
@@ -20,6 +23,7 @@ import (
 
 	configv1alpha4 "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 
+	addonsflux "github.com/errordeveloper/kube-test-env/addons/flux"
 	"github.com/errordeveloper/kube-test-env/clients"
 	"github.com/errordeveloper/kube-test-env/provider/kind/log"
 )
@@ -319,4 +323,39 @@ func (k Common[T]) NewClientMaker() (*clients.ClientMaker, error) {
 		return nil, err
 	}
 	return clients.NewClientMaker(clientConfig, Log), nil
+}
+
+func (k Common[T]) ApplyManifest(ctx context.Context, r io.Reader, rm *ssa.ResourceManager) error {
+	objs, err := ssa.ReadObjects(r)
+	if err != nil {
+		return err
+	}
+
+	if err := ssa.NormalizeUnstructuredList(objs); err != nil {
+		return err
+	}
+
+	changeSet, err := rm.ApplyAllStaged(ctx, objs, ssa.DefaultApplyOptions())
+	if err != nil {
+		return err
+	}
+	// for _, change := range changeSet.Entries {
+	//  TODO: log
+	// }
+	return rm.WaitForSet(changeSet.ToObjMetadataSet(),
+		ssa.WaitOptions{
+			Interval: 2 * time.Second,
+			Timeout:  time.Minute,
+		})
+
+}
+
+func (k Common[T]) ApplyFluxSourceController(ctx context.Context, rm *ssa.ResourceManager) error {
+	return k.ApplyManifest(ctx, addonsflux.SourceControllerManifests(), rm)
+}
+func (k Common[T]) ApplyFluxHelmController(ctx context.Context, rm *ssa.ResourceManager) error {
+	return k.ApplyManifest(ctx, addonsflux.HelmControllerManifests(), rm)
+}
+func (k Common[T]) ApplyFluxKustomizeController(ctx context.Context, rm *ssa.ResourceManager) error {
+	return k.ApplyManifest(ctx, addonsflux.KustomizeControllerManifests(), rm)
 }
