@@ -3,8 +3,11 @@ package clients
 import (
 	"context"
 	"fmt"
+	"io"
+	"time"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgo "k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +44,11 @@ type NamespacedClientMaker struct {
 	ResourceMetadataTemplate            v1.ObjectMeta
 
 	Cleanup func(context.Context)
+}
+
+type ResourceManager struct {
+	*ssa.ResourceManager
+	logger klog.Logger
 }
 
 func NewClientMaker(config *rest.Config, logger klog.Logger) *ClientMaker {
@@ -81,19 +89,22 @@ func (m *ClientMakerBase) NewClientSet() (clientgo.Interface, error) {
 	return clientgo.NewForConfig(clientConfig)
 }
 
-func (m *ClientMakerBase) NewResourceManager() (*ssa.ResourceManager, error) {
+func (m *ClientMakerBase) NewResourceManager() (*ResourceManager, error) {
 	client, err := m.NewControllerRuntimeClient()
 	if err != nil {
 		return nil, err
 	}
 
-	resourceManager := ssa.NewResourceManager(client,
-		polling.NewStatusPoller(client, client.RESTMapper(), polling.Options{}),
-		ssa.Owner{
-			Field: "kte",
-			Group: "addons.kte.dev",
-		},
-	)
+	resourceManager := &ResourceManager{
+		ResourceManager: ssa.NewResourceManager(client,
+			polling.NewStatusPoller(client, client.RESTMapper(), polling.Options{}),
+			ssa.Owner{
+				Field: "kte",
+				Group: "addons.kte.dev",
+			},
+		),
+		logger: m.logger,
+	}
 	return resourceManager, nil
 }
 
@@ -190,4 +201,81 @@ func (m *ClientMaker) Cleanup(ctx context.Context) {
 	for i := range m.cleanupCallbacks {
 		m.cleanupCallbacks[i](ctx)
 	}
+}
+
+func (m *ResourceManager) ApplyManifest(ctx context.Context, r io.Reader) error {
+	objs, err := ssa.ReadObjects(r)
+	if err != nil {
+		return err
+	}
+
+	if err := ssa.NormalizeUnstructuredListWithScheme(objs, m.Client().Scheme()); err != nil {
+		return err
+	}
+
+	changeSet, err := m.ApplyAllStaged(ctx, objs, ssa.DefaultApplyOptions())
+	if err != nil {
+		return err
+	}
+	for _, change := range changeSet.Entries {
+		m.logger.Info(change.String())
+	}
+	return m.WaitForSet(changeSet.ToObjMetadataSet(),
+		ssa.WaitOptions{
+			Interval: 2 * time.Second,
+			Timeout:  time.Minute,
+		})
+}
+
+func (m *ResourceManager) ApplyLists(ctx context.Context, objects ...runtime.Object) (*ssa.ChangeSet, error) {
+	// TODO: flatten nested lists
+	list, err := m.ToNormalizedList(objects...)
+	if err != nil {
+		return nil, err
+	}
+
+	return m.ApplyAllStaged(ctx, list, ssa.DefaultApplyOptions())
+}
+
+func (m *ResourceManager) ToNormalizedList(objects ...runtime.Object) ([]*unstructured.Unstructured, error) {
+	list := []*unstructured.Unstructured{}
+	for i := range objects {
+		unstructuredObject, err := ToUnstructured(objects[i])
+		if err != nil {
+			return nil, err
+		}
+
+		if !unstructuredObject.IsList() {
+			list = append(list, unstructuredObject)
+			continue
+		}
+
+		unstructuredList, err := unstructuredObject.ToList()
+		if err != nil {
+			return nil, err
+		}
+
+		for i := range unstructuredList.Items {
+			item := unstructuredList.Items[i].DeepCopy()
+			if err := ssa.NormalizeUnstructuredWithScheme(item, m.Client().Scheme()); err != nil {
+				return nil, err
+			}
+			list = append(list, item)
+		}
+	}
+
+	return list, nil
+}
+
+func ToUnstructured(obj runtime.Object) (*unstructured.Unstructured, error) {
+	// If the incoming object is already unstructured, perform a deep copy first
+	// otherwise DefaultUnstructuredConverter ends up returning the inner map without
+	// making a copy.
+	if _, ok := obj.(runtime.Unstructured); ok {
+		obj = obj.DeepCopyObject()
+	}
+	o, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+
+	newUnstr := &unstructured.Unstructured{Object: o}
+	return newUnstr, err
 }

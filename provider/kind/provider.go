@@ -5,13 +5,11 @@ import (
 	"crypto"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/fluxcd/pkg/ssa"
 	"github.com/google/uuid"
 
 	"k8s.io/client-go/rest"
@@ -334,37 +332,12 @@ func (k Common[T]) NewClientMaker() (*clients.ClientMaker, error) {
 	return clients.NewClientMaker(clientConfig, Log), nil
 }
 
-func (k Common[T]) ApplyManifest(ctx context.Context, r io.Reader, rm *ssa.ResourceManager) error {
-	objs, err := ssa.ReadObjects(r)
-	if err != nil {
-		return err
-	}
-
-	if err := ssa.NormalizeUnstructuredList(objs); err != nil {
-		return err
-	}
-
-	changeSet, err := rm.ApplyAllStaged(ctx, objs, ssa.DefaultApplyOptions())
-	if err != nil {
-		return err
-	}
-	for _, change := range changeSet.Entries {
-		k.logger.Info(change.String())
-	}
-	return rm.WaitForSet(changeSet.ToObjMetadataSet(),
-		ssa.WaitOptions{
-			Interval: 2 * time.Second,
-			Timeout:  time.Minute,
-		})
-
+func (k Common[T]) ApplyFluxSourceController(ctx context.Context, rm *clients.ResourceManager) error {
+	return rm.ApplyManifest(ctx, addonsflux.SourceControllerManifests())
 }
-
-func (k Common[T]) ApplyFluxSourceController(ctx context.Context, rm *ssa.ResourceManager) error {
-	return k.ApplyManifest(ctx, addonsflux.SourceControllerManifests(), rm)
+func (k Common[T]) ApplyFluxHelmController(ctx context.Context, rm *clients.ResourceManager) error {
+	return rm.ApplyManifest(ctx, addonsflux.HelmControllerManifests())
 }
-func (k Common[T]) ApplyFluxHelmController(ctx context.Context, rm *ssa.ResourceManager) error {
-	return k.ApplyManifest(ctx, addonsflux.HelmControllerManifests(), rm)
-}
-func (k Common[T]) ApplyFluxKustomizeController(ctx context.Context, rm *ssa.ResourceManager) error {
-	return k.ApplyManifest(ctx, addonsflux.KustomizeControllerManifests(), rm)
+func (k Common[T]) ApplyFluxKustomizeController(ctx context.Context, rm *clients.ResourceManager) error {
+	return rm.ApplyManifest(ctx, addonsflux.KustomizeControllerManifests())
 }
