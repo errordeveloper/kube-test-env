@@ -21,7 +21,7 @@ import (
 
 	configv1alpha4 "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 
-	addonsflux "github.com/errordeveloper/kube-test-env/addons/flux"
+	"github.com/errordeveloper/kube-test-env/addons"
 	"github.com/errordeveloper/kube-test-env/clients"
 	"github.com/errordeveloper/kube-test-env/provider/kind/log"
 )
@@ -45,6 +45,7 @@ type KindProvider interface {
 	KubeConfigPath() string
 	NewClientConfig() (*rest.Config, error)
 	NewClientMaker() (*clients.ClientMaker, error)
+	ApplyAddons(context.Context, addons.Config) error
 }
 
 type KindLifecycle interface {
@@ -332,12 +333,14 @@ func (k Common[T]) NewClientMaker() (*clients.ClientMaker, error) {
 	return clients.NewClientMaker(clientConfig, Log), nil
 }
 
-func (k Common[T]) ApplyFluxSourceController(ctx context.Context, rm *clients.ResourceManager) error {
-	return rm.ApplyManifest(ctx, addonsflux.SourceControllerManifests())
-}
-func (k Common[T]) ApplyFluxHelmController(ctx context.Context, rm *clients.ResourceManager) error {
-	return rm.ApplyManifest(ctx, addonsflux.HelmControllerManifests())
-}
-func (k Common[T]) ApplyFluxKustomizeController(ctx context.Context, rm *clients.ResourceManager) error {
-	return rm.ApplyManifest(ctx, addonsflux.KustomizeControllerManifests())
+func (k Common[T]) ApplyAddons(ctx context.Context, config addons.Config) error {
+	m, err := k.NewClientMaker()
+	if err != nil {
+		return err
+	}
+	rm, err := m.NewResourceManager()
+	if err != nil {
+		return err
+	}
+	return addons.Apply(ctx, rm, config)
 }
