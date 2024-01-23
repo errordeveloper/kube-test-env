@@ -80,7 +80,10 @@ type Unmanaged struct {
 	importedKubeconfigPath string
 }
 
-type Common[T KindProvider] struct{ k T }
+type Common[T KindProvider] struct {
+	k      T
+	logger klog.Logger
+}
 
 type (
 	Cluster    = configv1alpha4.Cluster
@@ -195,7 +198,10 @@ func New(artifactDir string, logger klog.Logger) KindLifecycle {
 		Logger:      logger.WithName("kind-provider").WithValues("kind-provider-uuid", uuid.String()),
 		Provider:    cluster.NewProvider(cluster.ProviderWithLogger(logAdapter)),
 	}
-	k.Common = Common[KindProvider]{k: k}
+	k.Common = Common[KindProvider]{
+		k:      k,
+		logger: logger,
+	}
 	return k
 }
 
@@ -204,7 +210,10 @@ func NewUnmanaged(logger klog.Logger, importKubeconfigPath string) *Unmanaged {
 		Logger:                 logger,
 		importedKubeconfigPath: importKubeconfigPath,
 	}
-	k.Common = Common[KindProvider]{k: k}
+	k.Common = Common[KindProvider]{
+		k:      k,
+		logger: logger,
+	}
 	return k
 }
 
@@ -339,9 +348,9 @@ func (k Common[T]) ApplyManifest(ctx context.Context, r io.Reader, rm *ssa.Resou
 	if err != nil {
 		return err
 	}
-	// for _, change := range changeSet.Entries {
-	//  TODO: log
-	// }
+	for _, change := range changeSet.Entries {
+		k.logger.Info(change.String())
+	}
 	return rm.WaitForSet(changeSet.ToObjMetadataSet(),
 		ssa.WaitOptions{
 			Interval: 2 * time.Second,
