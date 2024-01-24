@@ -3,6 +3,7 @@ package addons
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/errordeveloper/kube-test-env/addons/flux"
 	"github.com/errordeveloper/kube-test-env/clients"
@@ -14,6 +15,11 @@ type Config struct {
 
 type FluxComponentsConfig struct {
 	SourceController, HelmController, KustomizeController bool
+}
+
+var WaitOptions = clients.WaitOptions{
+	Interval: 2 * time.Second,
+	Timeout:  time.Minute,
 }
 
 func Apply(ctx context.Context, rm *clients.ResourceManager, config Config) error {
@@ -29,5 +35,6 @@ func Apply(ctx context.Context, rm *clients.ResourceManager, config Config) erro
 		manifests = append(manifests, flux.KustomizeControllerManifests())
 	}
 
-	return rm.ApplyManifest(ctx, io.MultiReader(manifests...))
+	_, err := rm.ApplyManifest(ctx, &WaitOptions, io.MultiReader(manifests...))
+	return err
 }

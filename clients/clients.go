@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -50,6 +49,11 @@ type ResourceManager struct {
 	*ssa.ResourceManager
 	logger klog.Logger
 }
+
+type (
+	ChangeSet   = ssa.ChangeSet
+	WaitOptions = ssa.WaitOptions
+)
 
 func NewClientMaker(config *rest.Config, logger klog.Logger) *ClientMaker {
 	return &ClientMaker{
@@ -203,38 +207,45 @@ func (m *ClientMaker) Cleanup(ctx context.Context) {
 	}
 }
 
-func (m *ResourceManager) ApplyManifest(ctx context.Context, r io.Reader) error {
-	objs, err := ssa.ReadObjects(r)
+func (m *ResourceManager) ApplyManifest(ctx context.Context, waitOptions *WaitOptions, r io.Reader) (*ChangeSet, error) {
+	objects, err := ssa.ReadObjects(r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := ssa.NormalizeUnstructuredListWithScheme(objs, m.Client().Scheme()); err != nil {
-		return err
+	if err := ssa.NormalizeUnstructuredListWithScheme(objects, m.Client().Scheme()); err != nil {
+		return nil, err
 	}
 
-	changeSet, err := m.ApplyAllStaged(ctx, objs, ssa.DefaultApplyOptions())
-	if err != nil {
-		return err
-	}
-	for _, change := range changeSet.Entries {
-		m.logger.Info(change.String())
-	}
-	return m.WaitForSet(changeSet.ToObjMetadataSet(),
-		ssa.WaitOptions{
-			Interval: 2 * time.Second,
-			Timeout:  time.Minute,
-		})
+	return m.doApply(ctx, waitOptions, objects)
 }
 
-func (m *ResourceManager) ApplyLists(ctx context.Context, objects ...runtime.Object) (*ssa.ChangeSet, error) {
+func (m *ResourceManager) ApplyLists(ctx context.Context, waitOptions *WaitOptions, objects ...runtime.Object) (*ChangeSet, error) {
 	// TODO: flatten nested lists
 	list, err := m.ToNormalizedList(objects...)
 	if err != nil {
 		return nil, err
 	}
 
-	return m.ApplyAllStaged(ctx, list, ssa.DefaultApplyOptions())
+	return m.doApply(ctx, waitOptions, list)
+}
+
+func (m *ResourceManager) doApply(ctx context.Context, waitOptions *WaitOptions, objects []*unstructured.Unstructured) (*ChangeSet, error) {
+	changeSet, err := m.ApplyAllStaged(ctx, objects, ssa.DefaultApplyOptions())
+	if err != nil {
+		return nil, err
+	}
+	for _, change := range changeSet.Entries {
+		m.logger.Info(change.String())
+	}
+	if waitOptions == nil {
+		return changeSet, nil
+	}
+	err = m.WaitForSet(changeSet.ToObjMetadataSet(), *waitOptions)
+	if err != nil {
+		return nil, err
+	}
+	return changeSet, nil
 }
 
 func (m *ResourceManager) ToNormalizedList(objects ...runtime.Object) ([]*unstructured.Unstructured, error) {
