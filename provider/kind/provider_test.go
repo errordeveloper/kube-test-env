@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	klog "k8s.io/klog/v2"
 
+	"github.com/errordeveloper/kube-test-env/addons"
 	"github.com/errordeveloper/kube-test-env/provider/kind"
 )
 
@@ -166,10 +167,13 @@ func TestKindCreateAccessDelete(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(rm).NotTo(BeNil())
 
-			managed := k.(*kind.Managed)
-			g.Expect(managed.ApplyFluxSourceController(ctx, rm)).To(Succeed())
-			g.Expect(managed.ApplyFluxHelmController(ctx, rm)).To(Succeed())
-			g.Expect(managed.ApplyFluxKustomizeController(ctx, rm)).To(Succeed())
+			g.Expect(k.ApplyAddons(ctx, addons.Config{
+				FluxComponents: addons.FluxComponentsConfig{
+					SourceController:    true,
+					HelmController:      true,
+					KustomizeController: true,
+				},
+			})).To(Succeed())
 		}
 
 		clients.Cleanup(ctx)
